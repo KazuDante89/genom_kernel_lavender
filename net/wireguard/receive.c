@@ -57,7 +57,7 @@ static int prepare_skb_header(struct sk_buff *skb, struct wg_device *wg)
 	size_t data_offset, data_len, header_len;
 	struct udphdr *udp;
 
-	if (unlikely(wg_skb_examine_untrusted_ip_hdr(skb) != skb->protocol ||
+	if (unlikely(!wg_check_packet_protocol(skb) ||
 		     skb_transport_header(skb) < skb->head ||
 		     (skb_transport_header(skb) + sizeof(struct udphdr)) >
 			     skb_tail_pointer(skb)))
@@ -392,7 +392,7 @@ static void wg_packet_consume_data_done(struct wg_peer *peer,
 #ifndef COMPAT_CANNOT_USE_CSUM_LEVEL
 	skb->csum_level = ~0; /* All levels */
 #endif
-	skb->protocol = wg_skb_examine_untrusted_ip_hdr(skb);
+	skb->protocol = ip_tunnel_parse_protocol(skb);
 	if (skb->protocol == htons(ETH_P_IP)) {
 		len = ntohs(ip_hdr(skb)->tot_len);
 		if (unlikely(len < sizeof(struct iphdr)))
@@ -419,14 +419,8 @@ static void wg_packet_consume_data_done(struct wg_peer *peer,
 	if (unlikely(routed_peer != peer))
 		goto dishonest_packet_peer;
 
-	if (unlikely(napi_gro_receive(&peer->napi, skb) == GRO_DROP)) {
-		++dev->stats.rx_dropped;
-		net_dbg_ratelimited("%s: Failed to give packet to userspace from peer %llu (%pISpfsc)\n",
-				    dev->name, peer->internal_id,
-				    &peer->endpoint.addr);
-	} else {
-		update_rx_stats(peer, message_data_len(len_before_trim));
-	}
+	napi_gro_receive(&peer->napi, skb);
+	update_rx_stats(peer, message_data_len(len_before_trim));
 	return;
 
 dishonest_packet_peer:
@@ -595,8 +589,7 @@ void wg_packet_receive(struct wg_device *wg, struct sk_buff *skb)
 		wg_packet_consume_data(wg, skb);
 		break;
 	default:
-		net_dbg_skb_ratelimited("%s: Invalid packet from %pISpfsc\n",
-					wg->dev->name, skb);
+		WARN(1, "Non-exhaustive parsing of packet header lead to unknown packet type!\n");
 		goto err;
 	}
 	return;
